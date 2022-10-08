@@ -1,8 +1,8 @@
 """
 **    Author:  DuanZhaobing                                                   **
 **    e-mail:  duanzb@waythink.cn                                             **
-**    Date:    22.09.27 - 22.09.30                                            **
-**    Version: 0.0.0.0                                                        **
+**    Date:    22.09.27 - 22.10.08                                            **
+**    Version: 0.0.0.1                                                        **
 **    Project: KLine                                                          **
 """
 """
@@ -42,7 +42,7 @@ if __name__ == "__main__":
     # Open the serial port
     ser = serial.Serial(SerialCfg["portName"], SerialCfg["baudRate"], timeout=SerialCfg["timeout"])
 """
-
+"""
 # coding=gb18030
 import threading
 import time
@@ -152,7 +152,8 @@ class ComThread:
         if self.l_serial.isOpen():
             self.l_serial.close()
 
-#调用串口，测试串口
+
+# 调用串口，测试串口
 def main():
     rt = ComThread()
     rt.sendport = '**1*80*'
@@ -177,12 +178,14 @@ def main():
     del rt
     return temp_ID, temp_data
 
+
 if __name__ == '__main__':
     # 设置一个主函数，用来运行窗口，便于若其他地方下需要调用串口是可以直接调用main函数
     ID, data = main()
 
     print("******")
     print(ID, data)
+"""
 
 """
 import serial  # 导入模块
@@ -386,3 +389,92 @@ if __name__ == "__main__":
         threading.Thread(target=Test_Thread, args=(uart.fd,)).start()
         threading.Thread(target=ReadData_Thread, args=(uart.fd,)).start()
 """
+
+# -*- encoding=utf-8 -*-
+import serial
+import time
+from threading import Thread, Lock
+
+
+# import WriteLog
+
+class COM:
+    def __init__(self, port, baud):
+        self.port = port
+        self.baud = int(baud)
+        self.open_com = None
+        # self.log = WriteLog.WriteLog('ITC_LOG.LOG')
+        self.get_data_flag = True
+        self.real_time_data = ''
+
+    # return real time data form com
+    def get_real_time_data(self):
+        return self.real_time_data
+
+    def clear_real_time_data(self):
+        self.real_time_data = ''
+
+    # set flag to receive data or not
+    def set_get_data_flag(self, get_data_flag):
+        self.get_data_flag = get_data_flag
+
+    def open(self):
+        try:
+            self.open_com = serial.Serial(self.port, self.baud)
+        except Exception as e:
+            self.log.error('Open com fail:{}/{}'.format(self.port, self.baud))
+            self.log.error('Exception:{}'.format(e))
+
+    def close(self):
+        if self.open_com is not None and self.open_com.isOpen:
+            self.open_com.close()
+
+    def send_data(self, data):
+        if self.open_com is None:
+            self.open()
+        success_bytes = self.open_com.write(data.encode('UTF-8'))
+        return success_bytes
+
+    def get_data(self, over_time=300):
+        all_data = ''
+        if self.open_com is None:
+            self.open()
+        start_time = time.time()
+        while True:
+            end_time = time.time()
+            if end_time - start_time < over_time and self.get_data_flag:
+                if self.open_com.inWaiting():  # If the buffer has data, wait 0.05ms to avoid incomplete data reception.
+                    time.sleep(0.05)
+                    # data = self.open_com.read_all()  # Read all data in one timeout cycle
+                    data = self.open_com.read(self.open_com.inWaiting())  # Read all data in the buffer
+                    # data = self.open_com.read()  # read 1 size
+                    data_str = " ".join('{:02X}'.format(a) for a in data)
+                    if data_str != '':
+                        # self.log.info('Get data is:{}'.format(data))
+                        all_data = all_data + data_str
+                        print(all_data)
+                        # print(data)
+                        self.real_time_data = all_data
+            else:
+                self.set_get_data_flag(True)
+                break
+        return all_data
+
+    def get_device_version(self):
+        self.send_data('VERSION')
+        ver = self.get_data()
+        device_version_str_ = ""
+        for ascii_ in ver:
+            device_version_str_ += str(chr(ascii_))
+        print(device_version_str_)
+
+
+if __name__ == '__main__':
+    pass
+    com = COM('com12', 912600)
+    # com.open()
+    com.get_device_version()
+    # print(com.send_data('VERSION'))
+    # com.send_data('data')
+    # com.get_data(100)
+    com.close()
