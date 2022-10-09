@@ -1,10 +1,11 @@
 """
 **    Author:  DuanZhaobing                                                   **
 **    e-mail:  duanzb@waythink.cn                                             **
-**    Date:    22.09.27 - 22.10.08                                            **
-**    Version: 0.0.0.1                                                        **
+**    Date:    22.09.27 - 22.10.09                                            **
+**    Version: 0.0.0.2                                                        **
 **    Project: KLine                                                          **
 """
+
 """
 # !/usr/bin/python
 # -*- coding: UTF-8 -*-
@@ -391,19 +392,43 @@ if __name__ == "__main__":
 """
 
 # -*- encoding=utf-8 -*-
+import threading
 import serial
 import time
 from threading import Thread, Lock
+from datetime import datetime
+import KLineUDSPara as ParaDef
+import logging
+
+serial_data_buf = ''  #
+lock_com = Lock()  #
+
+"""
+logging.basicConfig(filename="logfile.log", level=logging.INFO)
+# Log Creation
+
+logging.info('your text goes here')
+logging.error('your text goes here')
+logging.debug('your text goes here')
+"""
 
 
-# import WriteLog
-
-class COM:
+class COM(object):
     def __init__(self, port, baud):
         self.port = port
         self.baud = int(baud)
         self.open_com = None
-        # self.log = WriteLog.WriteLog('ITC_LOG.LOG')
+        logging.basicConfig(filename="test-log.log",
+                            filemode='a',
+                            format='%(asctime)s,%(msecs)d - %(name)s - %(levelname)s - %(message)s',
+                            datefmt='%H:%M:%S',
+                            level=logging.DEBUG) # or level=logging.INFO
+        self.log = logging.getLogger(__name__)
+        self.log.info('This is a log info')
+        self.log.info('This is a log info')
+        self.log.debug('Debugging')
+        self.log.warning('Warning exists')
+        self.log.info('Finish')
         self.get_data_flag = True
         self.real_time_data = ''
 
@@ -422,6 +447,8 @@ class COM:
         try:
             self.open_com = serial.Serial(self.port, self.baud)
         except Exception as e:
+            # logging.error('Open com fail:{}/{}'.format(self.port, self.baud))
+            # logging.error('Exception:{}'.format(e))
             self.log.error('Open com fail:{}/{}'.format(self.port, self.baud))
             self.log.error('Exception:{}'.format(e))
 
@@ -432,49 +459,110 @@ class COM:
     def send_data(self, data):
         if self.open_com is None:
             self.open()
+        self.get_data_flag = True
         success_bytes = self.open_com.write(data.encode('UTF-8'))
-        return success_bytes
+        time.sleep(0.300)
+        global lock_com, serial_data_buf
+        lock_com.acquire()
+        receive_bytes = serial_data_buf
+        print("Tx data: " + data)
+        if receive_bytes != '':
+            print("Rx data: " + receive_bytes)
+        else:
+            print("Timeout No Response!")
+        lock_com.release()
+        return success_bytes, receive_bytes
 
-    def get_data(self, over_time=300):
-        all_data = ''
+    def send_get_data(self, send_data, over_time):
         if self.open_com is None:
             self.open()
+        self.get_data_flag = True
+        # Calculate the checksum
+        checksum = 0
+        for value in send_data:
+            checksum += value
+        send_data.append(checksum & 0xff)
+        # Processing instructions
+        send_data_str = 'DIAGNOSTIC'
+        send_data_str += "".join('{:02X}'.format(a) for a in send_data)
+        # 获取时间并格式化成22:24:24.000 形式
+        current_time_send = datetime.utcnow().strftime('%H:%M:%S.%f')[:-3]
+        # Write instructions to KLine diagnostic unit
+        success_bytes = self.open_com.write(send_data_str.encode('UTF-8'))
+        print("Tx data: " + current_time_send + " " + send_data_str)
         start_time = time.time()
-        while True:
+        received_data_str = ''
+        received_data = bytes()
+        while self.get_data_flag:
             end_time = time.time()
-            if end_time - start_time < over_time and self.get_data_flag:
-                if self.open_com.inWaiting():  # If the buffer has data, wait 0.05ms to avoid incomplete data reception.
-                    time.sleep(0.05)
-                    # data = self.open_com.read_all()  # Read all data in one timeout cycle
-                    data = self.open_com.read(self.open_com.inWaiting())  # Read all data in the buffer
-                    # data = self.open_com.read()  # read 1 size
-                    data_str = " ".join('{:02X}'.format(a) for a in data)
+            if end_time - start_time < over_time:
+                if self.open_com.inWaiting():  # 若缓冲区存在数据
+                    time.sleep(0.1)
+                    received_data += self.open_com.read(self.open_com.inWaiting())  # Read all data in the buffer
+                    data_str = " ".join('{:02X}'.format(a) for a in received_data)
                     if data_str != '':
-                        # self.log.info('Get data is:{}'.format(data))
-                        all_data = all_data + data_str
-                        print(all_data)
-                        # print(data)
-                        self.real_time_data = all_data
+                        received_data_str = received_data_str + data_str
+                        self.real_time_data = received_data_str
             else:
-                self.set_get_data_flag(True)
+                self.set_get_data_flag(False)
                 break
-        return all_data
+        current_time_receive = datetime.utcnow().strftime('%H:%M:%S.%f')[:-3]
+        print("Rx data: " + current_time_receive + " " + received_data.decode('latin-1'))
+        self.log.info("Rx data: " + current_time_receive + " " + received_data.decode('latin-1'))
+        global lock_com, serial_data_buf
+        lock_com.acquire()
+        serial_data_buf = received_data_str  # 保存串口数据至全局变量缓存
+        lock_com.release()
+        time.sleep(0.1)
+        return send_data, received_data
+
+    def start_send_receive_task(self, data, overtime):
+        task = threading.Thread(target=COM.send_get_data, args=(self, data, overtime))
+        # task.setDaemon(True)  # 把子线程设置为守护线程，必须在start()之前设置
+        task.start()
+        # task.join()
+
+    def start_send_task(self, data):
+        task = threading.Thread(target=COM.send_data, args=(self, data))
+        # task.setDaemon(True)  # 把子线程设置为守护线程，必须在start()之前设置
+        task.start()
 
     def get_device_version(self):
         self.send_data('VERSION')
-        ver = self.get_data()
-        device_version_str_ = ""
-        for ascii_ in ver:
-            device_version_str_ += str(chr(ascii_))
-        print(device_version_str_)
+        # ver = self.get_data()
+        # device_version_str_ = ""
+        # for ascii_ in ver:
+        #     device_version_str_ += str(chr(ascii_))
+        # print(device_version_str_)
 
 
 if __name__ == '__main__':
-    pass
-    com = COM('com12', 912600)
-    # com.open()
-    com.get_device_version()
-    # print(com.send_data('VERSION'))
-    # com.send_data('data')
-    # com.get_data(100)
-    com.close()
+    try:
+        pass
+        # 获取时间并格式化成2016-8-28 22:24:24.000 形式
+        current_time_start = datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]
+        print("Start time:" + current_time_start)
+        print('......\r\n\r\n')
+
+        com = COM('com12', 912600)  # Open com
+        # com.send_get_data(DiagnosticPara["StartCommunication"], 4)
+        # com.send_get_data(DiagnosticPara["StartDiagnosticSessionCustomer"], 0.1)
+        # com.send_get_data(DiagnosticPara["StartDiagnosticSessionProduction"], 0.1)
+        # com.send_get_data(DiagnosticPara["StartDiagnosticSessionDevelopment"], 0.1)
+        # com.send_get_data(DiagnosticPara["TestPresent"], 0.1)
+        # com.send_get_data(DiagnosticPara["ReadFaultMemoryDTC"], 0.1)
+
+        """
+        # 线程中进行
+        com.start_send_receive_task(DiagnosticPara["StartCommunication"], 4)
+        time.sleep(5)
+        com.start_send_receive_task(DiagnosticPara["StartDiagnosticSessionCustomer"], 0.1)
+        """
+
+        current_time_end = datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]
+        print('\r\n\r\n......')
+        print("End time:" + current_time_end)
+
+    except KeyboardInterrupt:
+        time.sleep(0.1)
+        print('\nKeyboardInterrupt ...')
